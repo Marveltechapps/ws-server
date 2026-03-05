@@ -1,0 +1,109 @@
+name: Deploy Selorg WebSocket Server (Rollback Safe)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy WebSocket Server to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT }}
+          script: |
+            set -e
+
+            echo "=============================="
+            echo "🚀 WEBSOCKET DEPLOYMENT STARTED"
+            echo "=============================="
+
+            WS_DIR="/home/ubuntu/selorg/ws-server"
+            DOCKERFILE="/home/ubuntu/selorg/Dockerfiles/Dockerfile-websocket"
+            ENV_FILE="/home/ubuntu/selorg/envs/websocket.env"
+
+            IMAGE_NAME="selorg-websocket"
+            CONTAINER_NAME="selorg-websocket"
+            BRANCH="main"
+
+            echo "➡️ Go to websocket directory"
+            cd $WS_DIR
+
+            echo "🧹 Sync repository"
+            git fetch origin
+            git checkout $BRANCH
+            git reset --hard origin/$BRANCH
+            git clean -fd
+
+            COMMIT=$(git rev-parse --short HEAD)
+
+            NEW_IMAGE="${IMAGE_NAME}:${COMMIT}"
+            LATEST_IMAGE="${IMAGE_NAME}:latest"
+            BACKUP_IMAGE="${IMAGE_NAME}:backup"
+
+            echo "📦 Backup previous image"
+            sudo docker image inspect $LATEST_IMAGE >/dev/null 2>&1 && sudo docker tag $LATEST_IMAGE $BACKUP_IMAGE || true
+
+            echo "🐳 Build new websocket image"
+            sudo docker build -t $NEW_IMAGE -f $DOCKERFILE .
+
+            echo "🏷 Tag as latest"
+            sudo docker tag $NEW_IMAGE $LATEST_IMAGE
+
+            echo "🛑 Stop & remove old container"
+            sudo docker stop $CONTAINER_NAME || true
+            sudo docker rm $CONTAINER_NAME || true
+
+            echo "🚀 Start new websocket container"
+            sudo docker run -d \
+              --name $CONTAINER_NAME \
+              --restart always \
+              --network selorg-net \
+              -p 127.0.0.1:5050:5050 \
+              --env-file $ENV_FILE \
+              $LATEST_IMAGE
+
+            echo "⏳ Waiting for websocket server boot..."
+            sleep 5
+
+            echo "🔍 Health check"
+            if curl -f http://127.0.0.1:5050/health >/dev/null 2>&1; then
+              echo "✅ WebSocket deployment successful"
+            else
+              echo "❌ Deployment failed → rollback"
+
+              sudo docker logs $CONTAINER_NAME --tail 80 || true
+              sudo docker rm -f $CONTAINER_NAME || true
+
+              if sudo docker image inspect $BACKUP_IMAGE >/dev/null 2>&1; then
+                echo "⏪ Rolling back"
+
+                sudo docker tag $BACKUP_IMAGE $LATEST_IMAGE
+
+                sudo docker run -d \
+                  --name $CONTAINER_NAME \
+                  --restart always \
+                  --network selorg-net \
+                  -p 127.0.0.1:5050:5050 \
+                  --env-file $ENV_FILE \
+                  $LATEST_IMAGE
+
+                echo "✅ Rollback successful"
+              else
+                echo "⚠️ No backup image available!"
+                exit 1
+              fi
+            fi
+
+            echo "🧹 Cleaning unused images"
+            sudo docker image prune -af
+
+            echo "=============================="
+            echo "🎉 WEBSOCKET DEPLOYMENT FINISHED"
+            echo "=============================="
