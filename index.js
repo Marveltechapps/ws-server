@@ -47,7 +47,9 @@ const httpServer = createServer((_req, res) => {
 });
 
 // ── Socket.IO ─────────────────────────────────────────────────────────────────
+// Path must match dashboard frontend (websocket.ts) and Picker/HHD apps
 const io = new SocketServer(httpServer, {
+  path: '/hhd-socket.io',
   cors: {
     origin: (origin, cb) => {
       if (!origin || origin === 'null') return cb(null, true);
