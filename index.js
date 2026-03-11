@@ -1,32 +1,39 @@
-require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const dotenv = require('dotenv');
+
+const envCandidates = [
+  path.resolve(__dirname, '.env'),
+  path.resolve(__dirname, '..', 'selorg-dashboard-backend-v1.1', '.env'),
+];
+
+const loadedEnvFiles = [];
+
+for (const envPath of envCandidates) {
+  if (!fs.existsSync(envPath)) {
+    continue;
+  }
+
+  dotenv.config({ path: envPath, override: false });
+  loadedEnvFiles.push(path.relative(__dirname, envPath));
+}
 
 const { createServer } = require('http');
 const { Server: SocketServer } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const Redis = require('ioredis');
+const { createCorsOriginHandler } = require('../selorg-dashboard-backend-v1.1/src/config/corsOrigins');
 
 const WS_PORT = process.env.WS_PORT || 5050;
 const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!JWT_SECRET) {
-  console.error('[ws-server] FATAL: JWT_SECRET is not set. Exiting.');
+  console.error(
+    `[ws-server] FATAL: JWT_SECRET is not set. Checked env files: ${loadedEnvFiles.join(', ') || 'none'}. Exiting.`
+  );
   process.exit(1);
 }
-
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
-  : ['http://localhost:3000', 'http://localhost:5000', 'http://localhost:5173'];
-
-const isLocalOrigin = (o) =>
-  typeof o === 'string' &&
-  /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(o.trim());
-
-const isLanOrigin = (o) =>
-  typeof o === 'string' &&
-  /^https?:\/\/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/i.test(
-    o.trim()
-  );
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
 const httpServer = createServer((_req, res) => {
@@ -51,14 +58,9 @@ const httpServer = createServer((_req, res) => {
 const io = new SocketServer(httpServer, {
   path: '/hhd-socket.io',
   cors: {
-    origin: (origin, cb) => {
-      if (!origin || origin === 'null') return cb(null, true);
-      if (isLocalOrigin(origin) || isLanOrigin(origin)) return cb(null, true);
-      if (process.env.NODE_ENV !== 'production') return cb(null, true);
-      if (allowedOrigins.includes(origin)) return cb(null, true);
+    origin: createCorsOriginHandler((origin) => {
       console.warn(`[ws-server] CORS blocked: ${origin}`);
-      cb(new Error('Not allowed by CORS'));
-    },
+    }),
     methods: ['GET', 'POST'],
     credentials: true,
   },
@@ -88,6 +90,10 @@ io.use((socket, next) => {
   }
 });
 
+// ── Redis publisher ───────────────────────────────────────────────────────────
+const pub = new Redis(REDIS_URL);
+pub.on('error', (err) => console.error(`[ws-server] Redis publisher error: ${err.message}`));
+
 // Connection handler
 io.on('connection', (socket) => {
   console.log(
@@ -96,6 +102,27 @@ io.on('connection', (socket) => {
 
   if (socket.userId) socket.join(`user:${socket.userId}`);
   if (socket.role) socket.join(`role:${socket.role}`);
+
+  // Darkstore connection: request initial snapshot via Redis relay
+  if (socket.role === 'darkstore') {
+    pub.publish('ws:request', JSON.stringify({
+      event: 'get:live_orders',
+      data: { storeId: '', status: 'all', limit: 100 },
+      socketId: socket.id,
+      userId: socket.userId,
+      role: socket.role
+    }));
+  }
+
+  socket.on('get:live_orders', (params) => {
+    pub.publish('ws:request', JSON.stringify({
+      event: 'get:live_orders',
+      data: params,
+      socketId: socket.id,
+      userId: socket.userId,
+      role: socket.role
+    }));
+  });
 
   socket.on('subscribe', (room) => {
     socket.join(room);
