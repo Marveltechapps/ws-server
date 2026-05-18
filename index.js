@@ -132,6 +132,31 @@ io.on('connection', (socket) => {
     socket.leave(room);
   });
 
+  // Rider location updates — rider app emits this every 5s
+  socket.on('rider:location', (data) => {
+    const { orderId, latitude, longitude, heading, speed } = data;
+    if (!orderId) return;
+    // Broadcast to all clients subscribed to this order's room
+    io.to(`order:${orderId}`).emit('rider:location:update', {
+      orderId,
+      latitude,
+      longitude,
+      heading,
+      speed,
+      timestamp: Date.now(),
+      riderId: socket.userId,
+    });
+  });
+
+  // Customer subscribes to track their order
+  socket.on('track:order', (orderId) => {
+    if (orderId) socket.join(`order:${orderId}`);
+  });
+
+  socket.on('untrack:order', (orderId) => {
+    if (orderId) socket.leave(`order:${orderId}`);
+  });
+
   socket.on('disconnect', () => {
     console.log(`[ws-server] Client disconnected: ${socket.id}`);
   });
