@@ -4,7 +4,7 @@ const dotenv = require('dotenv');
 
 const envCandidates = [
   path.resolve(__dirname, '.env'),
-  path.resolve(__dirname, '..', 'selorg-dashboard-backend-v1.1', '.env'),
+  path.resolve(__dirname, '..', 'Backend', '.env'),
 ];
 
 const loadedEnvFiles = [];
@@ -21,7 +21,7 @@ for (const envPath of envCandidates) {
 const { createServer } = require('http');
 const { Server: SocketServer } = require('socket.io');
 const jwt = require('jsonwebtoken');
-const { createCorsOriginHandler } = require('../selorg-dashboard-backend-v1.1/src/config/corsOrigins');
+const { createCorsOriginHandler } = require('../Backend/src/config/corsOrigins');
 
 const WS_PORT = process.env.WS_PORT || 5050;
 const REDIS_URL = (process.env.REDIS_URL || '').trim();
